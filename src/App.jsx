@@ -81,7 +81,6 @@ export default function NutritionTracker() {
   const [dataLoading, setDataLoading] = useState(false);
 
   const [input, setInput] = useState("");
-  const [mealType, setMealType] = useState("Meal");
   const [parsing, setParsing] = useState(false);
   const [parsed, setParsed] = useState(null);
   const [parseErr, setParseErr] = useState("");
@@ -134,7 +133,7 @@ export default function NutritionTracker() {
     setDataLoading(true);
     try {
       await Promise.all([
-        initHeaders(t, "Food Log", ["Date","Time","Meal Type","Description","Calories","Protein","Carbs","Fat","Fiber"]),
+        initHeaders(t, "Food Log", ["Date","Time","Description","Calories","Protein","Carbs","Fat","Fiber"]),
         initHeaders(t, "Weight Log", ["Date","Weight (kg)"]),
         initHeaders(t, "Workout Log", ["Date","Type","Duration (min)","Notes"]),
       ]);
@@ -158,11 +157,11 @@ export default function NutritionTracker() {
   const loadAll = async (t) => {
     try {
       const [foodData, weightData, workoutData] = await Promise.all([
-        sheetsGet(t, "Food Log!A:I"),
+        sheetsGet(t, "Food Log!A:H"),
         sheetsGet(t, "Weight Log!A:B"),
         sheetsGet(t, "Workout Log!A:D"),
       ]);
-      setFoodLog(parseRows(foodData, ["date","time","mealType","description","calories","protein","carbs","fat","fiber"]));
+      setFoodLog(parseRows(foodData, ["date","time","description","calories","protein","carbs","fat","fiber"]));
       setWeightLog(parseRows(weightData, ["date","weight"]));
       setWorkoutLog(parseRows(workoutData, ["date","type","duration","notes"]));
     } catch (e) {
@@ -192,9 +191,19 @@ export default function NutritionTracker() {
         body: JSON.stringify({ description: input })
       });
       const data = await res.json();
+      if (!res.ok) {
+        setParseErr(`Error ${res.status}: ${data.error || "Unknown error"}`);
+        setParsing(false);
+        return;
+      }
+      if (!data.totals) {
+        setParseErr("Unexpected response. Try rephrasing your meal.");
+        setParsing(false);
+        return;
+      }
       setParsed(data);
-    } catch {
-      setParseErr("Couldn't parse this — try adding quantities, e.g. '200g chicken breast'.");
+    } catch (err) {
+      setParseErr("Network error: " + err.message);
     }
     setParsing(false);
   };
@@ -203,10 +212,10 @@ export default function NutritionTracker() {
     if (!parsed || !token) return;
     setSaving(true);
     try {
-      const row = [today, timeStr(), mealType, input,
+      const row = [today, timeStr(), input,
         parsed.totals.calories, parsed.totals.protein,
         parsed.totals.carbs, parsed.totals.fat, parsed.totals.fiber];
-      await sheetsAppend(token, "Food Log!A:I", [row]);
+      await sheetsAppend(token, "Food Log!A:H", [row]);
       await loadAll(token);
       setInput(""); setParsed(null);
     } catch (e) {
@@ -268,38 +277,22 @@ export default function NutritionTracker() {
           <div style={{ fontSize: 24, fontWeight: 900, color: TEXT, marginBottom: 6, letterSpacing: -0.5 }}>
             Tamir <span style={{ color: ACCENT }}>·</span> Tracker
           </div>
-          <div style={{ fontSize: 12, color: MUTED2, marginBottom: 8, lineHeight: 1.7 }}>
-            Logs directly to your <strong style={{ color: TEXT }}>Google Sheet</strong> on Drive.<br />
-            Nothing is stored locally.
+          <div style={{ fontSize: 12, color: MUTED2, marginBottom: 32, lineHeight: 1.7 }}>
+            Logs directly to your <strong style={{ color: TEXT }}>Google Sheet</strong> on Drive.
           </div>
-          <div style={{ fontSize: 11, color: MUTED, marginBottom: 32, fontFamily: "monospace" }}>
-            Sheet: Nutrition Tracker · Scope: spreadsheets
-          </div>
-
           {authError && (
             <div style={{ background: "#ef444412", border: "1px solid #ef444430", borderRadius: 12, padding: "14px 16px", marginBottom: 20, fontSize: 12, color: "#ef4444", textAlign: "left", lineHeight: 1.7 }}>
               <strong>Error:</strong> {authError}
-              <div style={{ marginTop: 8, color: MUTED2, fontSize: 11 }}>
-                Add this to authorized origins in Google Cloud:<br />
-                <span style={{ fontFamily: "monospace", color: TEXT }}>{window.location.origin}</span>
-              </div>
             </div>
           )}
-
           <button onClick={connect} disabled={!gisReady || authStatus === "loading"} style={{
             width: "100%", padding: "16px", background: !gisReady ? CARD2 : ACCENT,
             color: !gisReady ? MUTED : "#000", border: "none", borderRadius: 12,
             fontWeight: 800, fontSize: 14, cursor: !gisReady || authStatus === "loading" ? "not-allowed" : "pointer",
             letterSpacing: 0.3, transition: "all 0.2s", fontFamily: "inherit"
           }}>
-            {authStatus === "loading" ? "Opening Google sign-in..." : !gisReady ? "Loading Google auth..." : "Connect to Google Sheets →"}
+            {authStatus === "loading" ? "Opening Google sign-in..." : !gisReady ? "Loading..." : "Connect to Google Sheets →"}
           </button>
-
-          <div style={{ marginTop: 24, fontSize: 10, color: MUTED, lineHeight: 2 }}>
-            <div>🔐 OAuth 2.0 — you authorize, we never store your token</div>
-            <div>📊 Writes to: Food Log · Weight Log · Workout Log</div>
-            <div>🎯 Goal: Recomp · 2,800 kcal · 180g protein</div>
-          </div>
         </div>
       </div>
     );
@@ -307,6 +300,7 @@ export default function NutritionTracker() {
 
   return (
     <div style={{ background: BG, minHeight: "100vh", maxWidth: 460, margin: "0 auto", fontFamily: "'Outfit', 'Segoe UI', sans-serif", color: TEXT, paddingBottom: 48 }}>
+
       <div style={{ background: CARD, borderBottom: `1px solid ${BORDER}`, padding: "20px 20px 0" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
           <div>
@@ -354,19 +348,14 @@ export default function NutritionTracker() {
 
         {tab === "log" && (
           <div>
-            <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-              {["Breakfast", "Meal", "Snack", "Dinner"].map(t => (
-                <button key={t} onClick={() => setMealType(t)} style={{
-                  flex: 1, padding: "7px 0", border: `1px solid ${mealType === t ? ACCENT : BORDER}`,
-                  borderRadius: 8, background: mealType === t ? `${ACCENT}18` : "transparent",
-                  color: mealType === t ? ACCENT : MUTED2, cursor: "pointer", fontSize: 10, fontWeight: 700, transition: "all 0.15s"
-                }}>{t}</button>
-              ))}
-            </div>
-            <textarea value={input} onChange={e => setInput(e.target.value)}
-              placeholder={"Describe what you ate...\ne.g. 200g chicken breast, 150g rice, salad with 10ml olive oil"}
-              rows={3}
-              style={{ width: "100%", boxSizing: "border-box", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, color: TEXT, padding: "13px 14px", fontSize: 14, resize: "none", outline: "none", fontFamily: "inherit", lineHeight: 1.6, marginBottom: 10 }} />
+            <textarea
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              placeholder={"Describe what you ate — include meal type in your text if you like.\n\ne.g. Breakfast: 3 eggs scrambled, 2 slices sourdough\ne.g. Lunch: protein bar with 190 kcal, 13.5g protein, 10g carbs, 11g fat + medium cucumber"}
+              rows={5}
+              style={{ width: "100%", boxSizing: "border-box", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, color: TEXT, padding: "13px 14px", fontSize: 14, resize: "none", outline: "none", fontFamily: "inherit", lineHeight: 1.6, marginBottom: 10 }}
+            />
+
             <button onClick={parseFood} disabled={parsing || !input.trim()} style={{
               width: "100%", padding: "14px", borderRadius: 12, border: "none",
               background: parsing || !input.trim() ? CARD2 : ACCENT,
@@ -377,7 +366,11 @@ export default function NutritionTracker() {
             </button>
 
             {parseErr && (
-              <div style={{ background: "#ef444410", border: "1px solid #ef444430", borderRadius: 10, padding: "11px 14px", marginBottom: 12, fontSize: 12, color: "#ef4444" }}>{parseErr}</div>
+              <div style={{ background: "#ef444410", border: "1px solid #ef444440", borderRadius: 10, padding: "13px 16px", marginBottom: 12, fontSize: 12, color: "#ef4444", lineHeight: 1.7 }}>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>⚠ Something went wrong</div>
+                <div style={{ fontFamily: "monospace", fontSize: 11, wordBreak: "break-all" }}>{parseErr}</div>
+                <div style={{ marginTop: 8, color: MUTED2, fontSize: 11 }}>Try rephrasing, or be more specific with quantities.</div>
+              </div>
             )}
 
             {parsed && (
@@ -409,8 +402,8 @@ export default function NutritionTracker() {
                     flex: 1, padding: "11px", background: saving ? CARD2 : ACCENT,
                     color: saving ? MUTED : "#000", border: "none", borderRadius: 9,
                     fontWeight: 800, cursor: saving ? "not-allowed" : "pointer", fontSize: 13
-                  }}>{saving ? "Saving to Sheets..." : "✓ Save to Google Sheets"}</button>
-                  <button onClick={() => setParsed(null)} style={{ padding: "11px 16px", background: "transparent", color: MUTED2, border: `1px solid ${BORDER}`, borderRadius: 9, cursor: "pointer", fontSize: 13 }}>✕</button>
+                  }}>{saving ? "Saving..." : "✓ Save to Google Sheets"}</button>
+                  <button onClick={() => { setParsed(null); setParseErr(""); }} style={{ padding: "11px 16px", background: "transparent", color: MUTED2, border: `1px solid ${BORDER}`, borderRadius: 9, cursor: "pointer", fontSize: 13 }}>✕</button>
                 </div>
               </div>
             )}
@@ -420,14 +413,13 @@ export default function NutritionTracker() {
                 Today's Log — {todayFood.length} {todayFood.length === 1 ? "entry" : "entries"}
               </div>
               {todayFood.length === 0 ? (
-                <div style={{ textAlign: "center", color: MUTED, fontSize: 13, padding: "30px 0", border: `1px dashed ${BORDER}`, borderRadius: 12 }}>Nothing logged yet. Start above ↑</div>
+                <div style={{ textAlign: "center", color: MUTED, fontSize: 13, padding: "30px 0", border: `1px dashed ${BORDER}`, borderRadius: 12 }}>
+                  Nothing logged yet. Start above ↑
+                </div>
               ) : (
                 todayFood.map((e, i) => (
                   <div key={i} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 11, padding: "11px 14px", marginBottom: 8 }}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 3 }}>
-                      <span style={{ fontSize: 9, color: ACCENT, fontWeight: 800, textTransform: "uppercase", letterSpacing: 1 }}>{e.mealType}</span>
-                      <span style={{ fontSize: 9, color: MUTED }}>{e.time}</span>
-                    </div>
+                    <div style={{ fontSize: 9, color: MUTED, marginBottom: 3 }}>{e.time}</div>
                     <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.description}</div>
                     <div style={{ fontSize: 11, fontFamily: "monospace", display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <span style={{ color: ACCENT }}>{fmt(e.calories)} kcal</span>
@@ -624,7 +616,7 @@ export default function NutritionTracker() {
                 width: "100%", padding: "13px", background: wkSaved ? "#4ade80" : wkDur ? ACCENT : CARD2,
                 color: wkDur ? "#000" : MUTED, border: "none", borderRadius: 10, fontWeight: 800,
                 cursor: wkDur ? "pointer" : "not-allowed", fontSize: 13, transition: "all 0.3s"
-              }}>{wkSaving ? "Saving to Sheets..." : wkSaved ? "✓ Logged!" : "Log Workout"}</button>
+              }}>{wkSaving ? "Saving..." : wkSaved ? "✓ Logged!" : "Log Workout"}</button>
             </div>
 
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 20, marginBottom: 16 }}>
@@ -702,34 +694,28 @@ export default function NutritionTracker() {
                 <div style={{ fontSize: 13, color: MUTED2 }}>Log 2–3 days of meals to get personalized insights.</div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {avgCal >= TARGETS.calories * 0.92 && avgCal <= TARGETS.calories * 1.06 && avgPro >= TARGETS.protein * 0.9 && (
+                    <div style={{ background: `${ACCENT}12`, border: `1px solid ${ACCENT}30`, borderRadius: 9, padding: "11px 13px" }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: ACCENT, marginBottom: 3 }}>✓ On Track</div>
+                      <div style={{ fontSize: 12, color: MUTED2 }}>Calories and protein both on target. Keep it up!</div>
+                    </div>
+                  )}
                   {avgCal < TARGETS.calories * 0.85 && (
                     <div style={{ background: "#ef444412", border: "1px solid #ef444430", borderRadius: 9, padding: "11px 13px" }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: "#ef4444", marginBottom: 3 }}>⚠ Too Far Below Target</div>
                       <div style={{ fontSize: 12, color: MUTED2 }}>Averaging {fmt(TARGETS.calories - avgCal)} kcal below target. Too large a deficit risks muscle loss.</div>
                     </div>
                   )}
-                  {avgCal > TARGETS.calories * 1.1 && (
-                    <div style={{ background: "#ef444412", border: "1px solid #ef444430", borderRadius: 9, padding: "11px 13px" }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "#ef4444", marginBottom: 3 }}>⚠ Over Target</div>
-                      <div style={{ fontSize: 12, color: MUTED2 }}>Averaging {fmt(avgCal - TARGETS.calories)} kcal over target. Reduce portions or cut a snack.</div>
-                    </div>
-                  )}
                   {avgPro < TARGETS.protein * 0.85 && (
                     <div style={{ background: "#f59e0b12", border: "1px solid #f59e0b30", borderRadius: 9, padding: "11px 13px" }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: "#f59e0b", marginBottom: 3 }}>⚠ Protein Too Low</div>
-                      <div style={{ fontSize: 12, color: MUTED2 }}>Avg {fmt(avgPro)}g vs {TARGETS.protein}g target. Add chicken, eggs, tuna, or cottage cheese.</div>
+                      <div style={{ fontSize: 12, color: MUTED2 }}>Avg {fmt(avgPro)}g vs {TARGETS.protein}g target. Add chicken, eggs, or cottage cheese.</div>
                     </div>
                   )}
                   {wkWorkouts < 3 && daysLogged >= 4 && (
                     <div style={{ background: "#60a5fa12", border: "1px solid #60a5fa30", borderRadius: 9, padding: "11px 13px" }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: "#60a5fa", marginBottom: 3 }}>💡 Low Workout Frequency</div>
                       <div style={{ fontSize: 12, color: MUTED2 }}>Only {wkWorkouts} session(s) this week. 4/week is your recomp foundation.</div>
-                    </div>
-                  )}
-                  {avgCal >= TARGETS.calories * 0.92 && avgCal <= TARGETS.calories * 1.06 && avgPro >= TARGETS.protein * 0.9 && (
-                    <div style={{ background: `${ACCENT}12`, border: `1px solid ${ACCENT}30`, borderRadius: 9, padding: "11px 13px" }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: ACCENT, marginBottom: 3 }}>✓ On Track</div>
-                      <div style={{ fontSize: 12, color: MUTED2 }}>Calories and protein both on target. Keep this up — results show in 4–6 weeks.</div>
                     </div>
                   )}
                 </div>
