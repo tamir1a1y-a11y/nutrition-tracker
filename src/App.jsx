@@ -94,6 +94,10 @@ export default function NutritionTracker() {
   const [wkNotes, setWkNotes] = useState("");
   const [wkSaving, setWkSaving] = useState(false);
   const [wkSaved, setWkSaved] = useState(false);
+ 
+  const [aiInsight, setAiInsight] = useState("");
+  const [insightLoading, setInsightLoading] = useState(false);
+  const [insightErr, setInsightErr] = useState("");
 
   useEffect(() => {
     if (window.google?.accounts?.oauth2) { setGisReady(true); return; }
@@ -654,6 +658,38 @@ export default function NutritionTracker() {
 
         {tab === "insights" && (
           <div>
+           <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 20, marginBottom: 14 }}>
+  <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>AI Coach</div>
+  <div style={{ fontSize: 12, color: MUTED2, marginBottom: 14, lineHeight: 1.7 }}>
+    Get a personalized analysis of your last 14 days — patterns, wins, and specific advice.
+  </div>
+  <button onClick={async () => {
+    setInsightLoading(true); setInsightErr(""); setAiInsight("");
+    try {
+      const res = await fetch("/api/insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ foodLog, weightLog, workoutLog, targets: TARGETS })
+      });
+      const data = await res.json();
+      if (!res.ok) { setInsightErr(data.error || "Failed"); }
+      else { setAiInsight(data.analysis); }
+    } catch (e) { setInsightErr("Network error: " + e.message); }
+    setInsightLoading(false);
+  }} disabled={insightLoading} style={{
+    width: "100%", padding: "13px", background: insightLoading ? CARD2 : ACCENT,
+    color: insightLoading ? MUTED : "#000", border: "none", borderRadius: 10,
+    fontWeight: 800, fontSize: 13, cursor: insightLoading ? "not-allowed" : "pointer", marginBottom: 12
+  }}>
+    {insightLoading ? "Analyzing your data..." : "⟶ Get AI Coaching Report"}
+  </button>
+  {insightErr && (
+    <div style={{ background: "#ef444412", border: "1px solid #ef444430", borderRadius: 9, padding: "11px 13px", fontSize: 12, color: "#ef4444" }}>{insightErr}</div>
+  )}
+  {aiInsight && (
+    <div style={{ background: BG, borderRadius: 10, padding: "14px 16px", fontSize: 13, color: TEXT, lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{aiInsight}</div>
+  )}
+</div> 
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 20, marginBottom: 14 }}>
               <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase", marginBottom: 16 }}>7-Day Overview</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
