@@ -15,8 +15,48 @@ const TEXT = "#f0f0f0";
 const MUTED = "#555";
 const MUTED2 = "#888";
 
-const todayStr = () => new Date().toISOString().split("T")[0];
-const timeStr = () => new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+const pad = (n) => String(n).padStart(2, "0");
+const todayStr = () => {
+  const d = new Date();
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+};
+const timeStr = () => {
+  const d = new Date();
+  return pad(d.getHours()) + ":" + pad(d.getMinutes());
+};
+
+// Sheets sometimes returns dates as serial numbers (days since 1899-12-30).
+// This turns anything into a plain YYYY-MM-DD string.
+const normalizeDate = (v) => {
+  if (v == null || v === "") return "";
+  const s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const num = Number(s);
+  if (!isNaN(num) && num > 20000 && num < 80000) {
+    const ms = Date.UTC(1899, 11, 30) + Math.floor(num) * 86400000;
+    const d = new Date(ms);
+    return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate());
+  }
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    return parsed.getFullYear() + "-" + pad(parsed.getMonth() + 1) + "-" + pad(parsed.getDate());
+  }
+  return s;
+};
+
+// Time can come back as a fraction of a day (0.4111 = 09:52).
+const normalizeTime = (v) => {
+  if (v == null || v === "") return "";
+  const s = String(v).trim();
+  if (/^\d{1,2}:\d{2}/.test(s)) return s;
+  const num = Number(s);
+  if (!isNaN(num) && num >= 0 && num < 1) {
+    const mins = Math.round(num * 24 * 60);
+    return pad(Math.floor(mins / 60)) + ":" + pad(mins % 60);
+  }
+  return s;
+};
+
 const fmt = (n) => Math.round(n);
 const sum = (arr, key) => arr.reduce((a, e) => a + (parseFloat(e[key]) || 0), 0);
 
@@ -31,7 +71,7 @@ const sheetsGet = async (token, range) => {
 
 const sheetsAppend = async (token, range, values) => {
   const res = await fetch(
-    `${BASE}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    `${BASE}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
     {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -45,7 +85,7 @@ const sheetsAppend = async (token, range, values) => {
 
 const sheetsUpdate = async (token, range, values) => {
   const res = await fetch(
-    `${BASE}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
+    `${BASE}/values/${encodeURIComponent(range)}?valueInputOption=RAW`,
     {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -63,8 +103,10 @@ const parseRows = (data, keys) => {
   return rows.slice(1).map(row => {
     const obj = {};
     keys.forEach((k, j) => { obj[k] = row[j] || ""; });
+    if (obj.date !== undefined) obj.date = normalizeDate(obj.date);
+    if (obj.time !== undefined) obj.time = normalizeTime(obj.time);
     return obj;
-  });
+  }).filter(o => o.date);
 };
 
 export default function NutritionTracker() {
@@ -94,10 +136,13 @@ export default function NutritionTracker() {
   const [wkNotes, setWkNotes] = useState("");
   const [wkSaving, setWkSaving] = useState(false);
   const [wkSaved, setWkSaved] = useState(false);
- 
+
   const [aiInsight, setAiInsight] = useState("");
   const [insightLoading, setInsightLoading] = useState(false);
   const [insightErr, setInsightErr] = useState("");
+
+  const [debug, setDebug] = useState(null);
+  const [showDebug, setShowDebug] = useState(false);
 
   useEffect(() => {
     if (window.google?.accounts?.oauth2) { setGisReady(true); return; }
@@ -165,10 +210,23 @@ export default function NutritionTracker() {
         sheetsGet(t, "Weight Log!A:B"),
         sheetsGet(t, "Workout Log!A:D"),
       ]);
-      setFoodLog(parseRows(foodData, ["date","time","description","calories","protein","carbs","fat","fiber"]));
+
+      const parsedFood = parseRows(foodData, ["date","time","description","calories","protein","carbs","fat","fiber"]);
+      const tdy = todayStr();
+
+      setDebug({
+        appToday: tdy,
+        rawFirstRows: (foodData.values || []).slice(1, 4).map(r => r[0]),
+        normalizedDates: parsedFood.slice(0, 5).map(r => r.date),
+        totalRows: parsedFood.length,
+        matchingToday: parsedFood.filter(r => r.date === tdy).length,
+      });
+
+      setFoodLog(parsedFood);
       setWeightLog(parseRows(weightData, ["date","weight"]));
       setWorkoutLog(parseRows(workoutData, ["date","type","duration","notes"]));
     } catch (e) {
+      setDebug({ error: e.message });
       console.error("loadAll:", e.message);
     }
   };
@@ -253,7 +311,7 @@ export default function NutritionTracker() {
 
   const last7 = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() - (6 - i));
-    return d.toISOString().split("T")[0];
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
   });
   const weeklyRows = last7.map(date => {
     const fe = foodLog.filter(e => e.date === date);
@@ -341,11 +399,32 @@ export default function NutritionTracker() {
       <div style={{ padding: "16px 16px 0" }}>
         <div style={{ background: `${ACCENT}10`, border: `1px solid ${ACCENT}20`, borderRadius: 9, padding: "8px 14px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 11, color: ACCENT, fontWeight: 600 }}>✓ Live · Google Sheets</span>
-          <button onClick={() => { setDataLoading(true); loadAll(token).finally(() => setDataLoading(false)); }}
-            style={{ fontSize: 10, color: MUTED2, background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
-            {dataLoading ? "syncing..." : "↻ Refresh"}
-          </button>
+          <div style={{ display: "flex", gap: 12 }}>
+            <button onClick={() => setShowDebug(!showDebug)}
+              style={{ fontSize: 10, color: MUTED2, background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
+              debug
+            </button>
+            <button onClick={() => { setDataLoading(true); loadAll(token).finally(() => setDataLoading(false)); }}
+              style={{ fontSize: 10, color: MUTED2, background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
+              {dataLoading ? "syncing..." : "↻ Refresh"}
+            </button>
+          </div>
         </div>
+
+        {showDebug && (
+          <div style={{ background: "#0a0a0a", border: `1px solid #2a4a2a`, borderRadius: 10, padding: "12px 14px", marginBottom: 14, fontSize: 11, fontFamily: "monospace", color: "#7fdd7f", whiteSpace: "pre-wrap", wordBreak: "break-all", lineHeight: 1.8 }}>
+            <div style={{ color: MUTED2, marginBottom: 8, fontSize: 10, letterSpacing: 1 }}>DIAGNOSTICS</div>
+            {debug ? (
+              debug.error
+                ? "ERROR: " + debug.error
+                : "app today       = " + debug.appToday + "\n" +
+                  "raw col A       = " + JSON.stringify(debug.rawFirstRows) + "\n" +
+                  "normalized      = " + JSON.stringify(debug.normalizedDates) + "\n" +
+                  "rows parsed     = " + debug.totalRows + "\n" +
+                  "matching today  = " + debug.matchingToday
+            ) : "no data yet — hit Refresh"}
+          </div>
+        )}
       </div>
 
       <div style={{ padding: "0 16px" }}>
@@ -613,7 +692,7 @@ export default function NutritionTracker() {
               </div>
               <div style={{ marginBottom: 14 }}>
                 <label style={{ fontSize: 10, color: MUTED2, display: "block", marginBottom: 5 }}>Notes (optional)</label>
-                <input placeholder="e.g. Heavy squats, bench 3×5" value={wkNotes} onChange={e => setWkNotes(e.target.value)}
+                <input placeholder="e.g. Heavy squats, bench 3x5" value={wkNotes} onChange={e => setWkNotes(e.target.value)}
                   style={{ width: "100%", boxSizing: "border-box", background: BG, border: `1px solid ${BORDER}`, borderRadius: 9, color: TEXT, padding: "11px 13px", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
               </div>
               <button onClick={logWorkout} disabled={!wkDur || wkSaving} style={{
@@ -632,7 +711,7 @@ export default function NutritionTracker() {
                 <div style={{ height: "100%", width: `${Math.min((wkWorkouts / 4) * 100, 100)}%`, background: ACCENT, borderRadius: 3, transition: "width 0.5s" }} />
               </div>
               <div style={{ fontSize: 11, color: MUTED2, marginTop: 8 }}>
-                {wkWorkouts >= 4 ? "✓ Weekly target hit! 💪" : `${4 - wkWorkouts} more session${4 - wkWorkouts !== 1 ? "s" : ""} to hit your target`}
+                {wkWorkouts >= 4 ? "✓ Weekly target hit!" : `${4 - wkWorkouts} more session${4 - wkWorkouts !== 1 ? "s" : ""} to hit your target`}
               </div>
             </div>
 
@@ -658,38 +737,39 @@ export default function NutritionTracker() {
 
         {tab === "insights" && (
           <div>
-           <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 20, marginBottom: 14 }}>
-  <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>AI Coach</div>
-  <div style={{ fontSize: 12, color: MUTED2, marginBottom: 14, lineHeight: 1.7 }}>
-    Get a personalized analysis of your last 14 days — patterns, wins, and specific advice.
-  </div>
-  <button onClick={async () => {
-    setInsightLoading(true); setInsightErr(""); setAiInsight("");
-    try {
-      const res = await fetch("/api/insights", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ foodLog, weightLog, workoutLog, targets: TARGETS })
-      });
-      const data = await res.json();
-      if (!res.ok) { setInsightErr(data.error || "Failed"); }
-      else { setAiInsight(data.analysis); }
-    } catch (e) { setInsightErr("Network error: " + e.message); }
-    setInsightLoading(false);
-  }} disabled={insightLoading} style={{
-    width: "100%", padding: "13px", background: insightLoading ? CARD2 : ACCENT,
-    color: insightLoading ? MUTED : "#000", border: "none", borderRadius: 10,
-    fontWeight: 800, fontSize: 13, cursor: insightLoading ? "not-allowed" : "pointer", marginBottom: 12
-  }}>
-    {insightLoading ? "Analyzing your data..." : "⟶ Get AI Coaching Report"}
-  </button>
-  {insightErr && (
-    <div style={{ background: "#ef444412", border: "1px solid #ef444430", borderRadius: 9, padding: "11px 13px", fontSize: 12, color: "#ef4444" }}>{insightErr}</div>
-  )}
-  {aiInsight && (
-    <div style={{ background: BG, borderRadius: 10, padding: "14px 16px", fontSize: 13, color: TEXT, lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{aiInsight}</div>
-  )}
-</div> 
+            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 20, marginBottom: 14 }}>
+              <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>AI Coach</div>
+              <div style={{ fontSize: 12, color: MUTED2, marginBottom: 14, lineHeight: 1.7 }}>
+                Get a personalized analysis of your last 14 days — patterns, wins, and specific advice.
+              </div>
+              <button onClick={async () => {
+                setInsightLoading(true); setInsightErr(""); setAiInsight("");
+                try {
+                  const res = await fetch("/api/insights", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ foodLog, weightLog, workoutLog, targets: TARGETS })
+                  });
+                  const data = await res.json();
+                  if (!res.ok) { setInsightErr(data.error || "Failed"); }
+                  else { setAiInsight(data.analysis); }
+                } catch (e) { setInsightErr("Network error: " + e.message); }
+                setInsightLoading(false);
+              }} disabled={insightLoading} style={{
+                width: "100%", padding: "13px", background: insightLoading ? CARD2 : ACCENT,
+                color: insightLoading ? MUTED : "#000", border: "none", borderRadius: 10,
+                fontWeight: 800, fontSize: 13, cursor: insightLoading ? "not-allowed" : "pointer", marginBottom: 12
+              }}>
+                {insightLoading ? "Analyzing your data..." : "⟶ Get AI Coaching Report"}
+              </button>
+              {insightErr && (
+                <div style={{ background: "#ef444412", border: "1px solid #ef444430", borderRadius: 9, padding: "11px 13px", fontSize: 12, color: "#ef4444" }}>{insightErr}</div>
+              )}
+              {aiInsight && (
+                <div style={{ background: BG, borderRadius: 10, padding: "14px 16px", fontSize: 13, color: TEXT, lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{aiInsight}</div>
+              )}
+            </div>
+
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 20, marginBottom: 14 }}>
               <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase", marginBottom: 16 }}>7-Day Overview</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
@@ -715,9 +795,7 @@ export default function NutritionTracker() {
                     <div style={{ fontSize: 8, color: MUTED2, marginBottom: 4 }}>
                       {new Date(d.date + "T12:00:00").toLocaleDateString("en", { weekday: "narrow" })}
                     </div>
-                    <div style={{ height: 32, borderRadius: 5, background: d.logged && d.workouts > 0 ? ACCENT : d.logged ? `${ACCENT}55` : BORDER, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      {d.workouts > 0 && <span style={{ fontSize: 11 }}>💪</span>}
-                    </div>
+                    <div style={{ height: 32, borderRadius: 5, background: d.logged && d.workouts > 0 ? ACCENT : d.logged ? `${ACCENT}55` : BORDER }} />
                     <div style={{ fontSize: 8, color: MUTED, marginTop: 3 }}>{d.logged ? fmt(d.calories) : ""}</div>
                   </div>
                 ))}
@@ -732,25 +810,25 @@ export default function NutritionTracker() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {avgCal >= TARGETS.calories * 0.92 && avgCal <= TARGETS.calories * 1.06 && avgPro >= TARGETS.protein * 0.9 && (
                     <div style={{ background: `${ACCENT}12`, border: `1px solid ${ACCENT}30`, borderRadius: 9, padding: "11px 13px" }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: ACCENT, marginBottom: 3 }}>✓ On Track</div>
-                      <div style={{ fontSize: 12, color: MUTED2 }}>Calories and protein both on target. Keep it up!</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: ACCENT, marginBottom: 3 }}>On track</div>
+                      <div style={{ fontSize: 12, color: MUTED2 }}>Calories and protein both on target. Keep it up.</div>
                     </div>
                   )}
                   {avgCal < TARGETS.calories * 0.85 && (
                     <div style={{ background: "#ef444412", border: "1px solid #ef444430", borderRadius: 9, padding: "11px 13px" }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "#ef4444", marginBottom: 3 }}>⚠ Too Far Below Target</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#ef4444", marginBottom: 3 }}>Too far below target</div>
                       <div style={{ fontSize: 12, color: MUTED2 }}>Averaging {fmt(TARGETS.calories - avgCal)} kcal below target. Too large a deficit risks muscle loss.</div>
                     </div>
                   )}
                   {avgPro < TARGETS.protein * 0.85 && (
                     <div style={{ background: "#f59e0b12", border: "1px solid #f59e0b30", borderRadius: 9, padding: "11px 13px" }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "#f59e0b", marginBottom: 3 }}>⚠ Protein Too Low</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#f59e0b", marginBottom: 3 }}>Protein too low</div>
                       <div style={{ fontSize: 12, color: MUTED2 }}>Avg {fmt(avgPro)}g vs {TARGETS.protein}g target. Add chicken, eggs, or cottage cheese.</div>
                     </div>
                   )}
                   {wkWorkouts < 3 && daysLogged >= 4 && (
                     <div style={{ background: "#60a5fa12", border: "1px solid #60a5fa30", borderRadius: 9, padding: "11px 13px" }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "#60a5fa", marginBottom: 3 }}>💡 Low Workout Frequency</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#60a5fa", marginBottom: 3 }}>Low workout frequency</div>
                       <div style={{ fontSize: 12, color: MUTED2 }}>Only {wkWorkouts} session(s) this week. 4/week is your recomp foundation.</div>
                     </div>
                   )}
@@ -776,7 +854,7 @@ export default function NutritionTracker() {
                 ))}
               </div>
               <div style={{ marginTop: 14, padding: "12px 14px", background: BG, borderRadius: 10, fontSize: 11, color: MUTED2, lineHeight: 1.7 }}>
-                <strong style={{ color: TEXT }}>Goal:</strong> Recomposition · 110kg → ~92kg at 14% BF<br />
+                <strong style={{ color: TEXT }}>Goal:</strong> Recomposition · 110kg to ~92kg at 14% BF<br />
                 <strong style={{ color: ACCENT }}>Timeline: 9–14 months</strong> · ~500 kcal daily deficit
               </div>
             </div>
