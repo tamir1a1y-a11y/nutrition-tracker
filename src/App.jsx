@@ -31,6 +31,8 @@ const normalizeDate = (v) => {
   if (v == null || v === "") return "";
   const s = String(v).trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const dmy = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  if (dmy) return dmy[3] + "-" + pad(dmy[2]) + "-" + pad(dmy[1]);
   const num = Number(s);
   if (!isNaN(num) && num > 20000 && num < 80000) {
     const ms = Date.UTC(1899, 11, 30) + Math.floor(num) * 86400000;
