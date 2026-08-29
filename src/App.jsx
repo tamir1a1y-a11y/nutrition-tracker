@@ -154,6 +154,10 @@ export default function NutritionTracker() {
 
   const [logMode, setLogMode] = useState(() => readPref("logMode", "describe"));
   const [prepScreen, setPrepScreen] = useState("library");
+  const [cart, setCart] = useState({});
+  const [cartExtra, setCartExtra] = useState("");
+  const [cartSaving, setCartSaving] = useState(false);
+  const [cartErr, setCartErr] = useState("");
 
   const [input, setInput] = useState("");
   const [parsing, setParsing] = useState(false);
@@ -359,6 +363,73 @@ export default function NutritionTracker() {
       setPrepScreen("library");
     } catch (e) { setMErr("Error saving: " + e.message); }
     setMSaving(false);
+  };
+
+  const cartAdd = (m) => {
+    const cur = cart[m.id] || 0;
+    if (m.type === "batch") {
+      const left = (parseInt(m.total) || 0) - (parseInt(m.used) || 0);
+      if (cur >= left) return;
+    }
+    setCart({ ...cart, [m.id]: cur + 1 });
+  };
+
+  const cartRemove = (m) => {
+    const cur = cart[m.id] || 0;
+    const next = { ...cart };
+    if (cur <= 1) delete next[m.id]; else next[m.id] = cur - 1;
+    setCart(next);
+  };
+
+  const cartPicked = meals.filter(m => (cart[m.id] || 0) > 0);
+  const cartTotals = cartPicked.reduce((a, m) => {
+    const q = cart[m.id];
+    return {
+      calories: a.calories + (parseFloat(m.calories) || 0) * q,
+      protein: a.protein + (parseFloat(m.protein) || 0) * q,
+      carbs: a.carbs + (parseFloat(m.carbs) || 0) * q,
+      fat: a.fat + (parseFloat(m.fat) || 0) * q,
+      fiber: a.fiber + (parseFloat(m.fiber) || 0) * q,
+    };
+  }, { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 });
+
+  const logCart = async () => {
+    if (!token) return;
+    const extra = cartExtra.trim();
+    if (cartPicked.length === 0 && !extra) return;
+    setCartSaving(true); setCartErr("");
+    try {
+      let t = { ...cartTotals };
+      let parts = cartPicked.map(m => m.name + (cart[m.id] > 1 ? " x" + cart[m.id] : ""));
+
+      if (extra) {
+        const data = await callParse(extra);
+        t.calories += parseFloat(data.totals.calories) || 0;
+        t.protein += parseFloat(data.totals.protein) || 0;
+        t.carbs += parseFloat(data.totals.carbs) || 0;
+        t.fat += parseFloat(data.totals.fat) || 0;
+        t.fiber += parseFloat(data.totals.fiber) || 0;
+        parts.push("+ " + extra);
+      }
+
+      const r1 = (n) => Math.round(n * 10) / 10;
+      await sheetsAppend(token, "Food Log!A:H", [[
+        today, timeStr(), parts.join(", "),
+        Math.round(t.calories), r1(t.protein), r1(t.carbs), r1(t.fat), r1(t.fiber)
+      ]]);
+
+      for (const m of cartPicked) {
+        if (m.type !== "batch") continue;
+        const newUsed = (parseInt(m.used) || 0) + cart[m.id];
+        await sheetsUpdate(token, "Meals!F" + m._row, [[newUsed]]);
+      }
+
+      await loadAll(token);
+      setCart({}); setCartExtra("");
+    } catch (e) {
+      setCartErr(e.message);
+    }
+    setCartSaving(false);
   };
 
   const logWeight = async () => {
@@ -569,7 +640,7 @@ export default function NutritionTracker() {
                   <>
                     <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>Always available</div>
                     {mealsAvailable.filter(m => m.type === "fixed").map(m => (
-                      <MealRow key={m.id} m={m} />
+                      <MealRow key={m.id} m={m} qty={cart[m.id] || 0} onAdd={() => cartAdd(m)} onRemove={() => cartRemove(m)} />
                     ))}
                   </>
                 )}
@@ -578,7 +649,7 @@ export default function NutritionTracker() {
                   <>
                     <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase", margin: "16px 0 8px" }}>Batches</div>
                     {mealsAvailable.filter(m => m.type === "batch").map(m => (
-                      <MealRow key={m.id} m={m} />
+                      <MealRow key={m.id} m={m} qty={cart[m.id] || 0} onAdd={() => cartAdd(m)} onRemove={() => cartRemove(m)} />
                     ))}
                   </>
                 )}
@@ -588,6 +659,47 @@ export default function NutritionTracker() {
                     No prepped meals yet.<br />Create one below.
                   </div>
                 )}
+
+                <div style={{ marginTop: 18, border: `1px solid ${cartPicked.length || cartExtra.trim() ? "#3d4a22" : BORDER}`, background: cartPicked.length || cartExtra.trim() ? "#14170c" : CARD, borderRadius: 12, padding: "13px 14px" }}>
+                  <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 }}>This meal</div>
+
+                  {cartPicked.length === 0 ? (
+                    <div style={{ fontSize: 12, color: MUTED, padding: "4px 0" }}>Tap Add above to build a meal.</div>
+                  ) : cartPicked.map(m => (
+                    <div key={m.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: TEXT, padding: "4px 0" }}>
+                      <span>{m.name}{cart[m.id] > 1 ? " x" + cart[m.id] : ""}</span>
+                      <span style={{ fontFamily: "monospace", color: MUTED2 }}>{Math.round((parseFloat(m.calories) || 0) * cart[m.id])}</span>
+                    </div>
+                  ))}
+
+                  <input value={cartExtra} onChange={e => setCartExtra(e.target.value)}
+                    placeholder="anything not saved — e.g. a banana"
+                    style={{ ...inputStyle, fontSize: 12, padding: "9px 11px", margin: "10px 0 11px" }} />
+
+                  <div style={{ display: "flex", gap: 9, fontSize: 12, fontFamily: "monospace", paddingTop: 10, borderTop: `1px solid ${BORDER}`, marginBottom: 11, flexWrap: "wrap" }}>
+                    <span style={{ color: ACCENT }}>{Math.round(cartTotals.calories)} kcal</span>
+                    <span style={{ color: "#4ade80" }}>P {Math.round(cartTotals.protein)}</span>
+                    <span style={{ color: "#60a5fa" }}>C {Math.round(cartTotals.carbs)}</span>
+                    <span style={{ color: "#fb923c" }}>F {Math.round(cartTotals.fat)}</span>
+                    {cartExtra.trim() && <span style={{ color: MUTED, marginLeft: "auto" }}>+ text</span>}
+                  </div>
+
+                  {cartErr && (
+                    <div style={{ background: "#ef444410", border: "1px solid #ef444440", borderRadius: 9, padding: "10px 12px", marginBottom: 10, fontSize: 11, color: "#ef4444", lineHeight: 1.6 }}>
+                      {cartErr}
+                    </div>
+                  )}
+
+                  <button onClick={logCart} disabled={cartSaving || (cartPicked.length === 0 && !cartExtra.trim())} style={{
+                    width: "100%", padding: "11px", borderRadius: 9, border: "none", fontFamily: "inherit",
+                    background: cartSaving || (cartPicked.length === 0 && !cartExtra.trim()) ? CARD2 : ACCENT,
+                    color: cartSaving || (cartPicked.length === 0 && !cartExtra.trim()) ? MUTED : "#000",
+                    fontWeight: 800, fontSize: 13,
+                    cursor: cartSaving || (cartPicked.length === 0 && !cartExtra.trim()) ? "not-allowed" : "pointer"
+                  }}>
+                    {cartSaving ? "Saving..." : cartPicked.length ? "Log meal · " + Math.round(cartTotals.calories) + " kcal" : "Log meal"}
+                  </button>
+                </div>
 
                 <button onClick={() => { setPrepScreen("create"); setMErr(""); }} style={{
                   width: "100%", marginTop: 12, padding: "12px", background: "transparent",
@@ -1060,30 +1172,50 @@ export default function NutritionTracker() {
   );
 }
 
-function MealRow({ m }) {
+function MealRow({ m, qty = 0, onAdd, onRemove }) {
   const isBatch = m.type === "batch";
   const left = (parseInt(m.total) || 0) - (parseInt(m.used) || 0);
+  const atCap = isBatch && qty >= left;
+  const btn = {
+    width: 28, height: 28, padding: 0, background: CARD2, border: `1px solid ${BORDER}`,
+    borderRadius: 7, color: TEXT, fontSize: 15, lineHeight: 1, cursor: "pointer", fontFamily: "inherit"
+  };
   return (
-    <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "11px 13px", marginBottom: 7 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 4 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: TEXT }}>{m.name}</span>
-        {isBatch ? (
-          <span style={{ fontSize: 10, color: ACCENT, background: `${ACCENT}15`, padding: "2px 8px", borderRadius: 20, whiteSpace: "nowrap" }}>
-            {left} of {m.total}
-          </span>
-        ) : (
-          <span style={{ fontSize: 11, color: MUTED }}>∞</span>
-        )}
+    <div style={{ background: CARD, border: `1px solid ${qty > 0 ? "#3d4a22" : BORDER}`, borderRadius: 10, padding: "11px 13px", marginBottom: 7, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: TEXT }}>{m.name}</span>
+          {isBatch ? (
+            <span style={{ fontSize: 10, color: ACCENT, background: `${ACCENT}15`, padding: "2px 8px", borderRadius: 20, whiteSpace: "nowrap" }}>
+              {left} of {m.total}
+            </span>
+          ) : (
+            <span style={{ fontSize: 11, color: MUTED }}>∞</span>
+          )}
+        </div>
+        <div style={{ fontSize: 11, fontFamily: "monospace", color: MUTED2, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ color: ACCENT }}>{m.calories} kcal</span>
+          <span style={{ color: "#4ade80" }}>P {m.protein}</span>
+          <span style={{ color: "#60a5fa" }}>C {m.carbs}</span>
+          <span style={{ color: "#fb923c" }}>F {m.fat}</span>
+        </div>
+        <div style={{ fontSize: 10, color: MUTED, marginTop: 3 }}>
+          1 of {m.total}{isBatch ? " · made " + normalizeDate(m.created) : " · recipe"}
+        </div>
       </div>
-      <div style={{ fontSize: 11, fontFamily: "monospace", color: MUTED2, display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <span style={{ color: ACCENT }}>{m.calories} kcal</span>
-        <span style={{ color: "#4ade80" }}>P {m.protein}</span>
-        <span style={{ color: "#60a5fa" }}>C {m.carbs}</span>
-        <span style={{ color: "#fb923c" }}>F {m.fat}</span>
-      </div>
-      <div style={{ fontSize: 10, color: MUTED, marginTop: 3 }}>
-        1 of {m.total}{isBatch ? " · made " + normalizeDate(m.created) : " · recipe"}
-      </div>
+
+      {qty > 0 ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <button onClick={onRemove} style={btn}>−</button>
+          <span style={{ fontFamily: "monospace", fontSize: 13, color: ACCENT, minWidth: 12, textAlign: "center" }}>{qty}</span>
+          <button onClick={onAdd} disabled={atCap} style={{ ...btn, color: atCap ? MUTED : TEXT, cursor: atCap ? "not-allowed" : "pointer" }}>+</button>
+        </div>
+      ) : (
+        <button onClick={onAdd} style={{
+          padding: "7px 14px", background: "transparent", border: `1px solid #333`,
+          borderRadius: 7, color: ACCENT, fontSize: 12, cursor: "pointer", flexShrink: 0, fontFamily: "inherit"
+        }}>Add</button>
+      )}
     </div>
   );
 }
