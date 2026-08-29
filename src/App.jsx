@@ -4,7 +4,7 @@ const CLIENT_ID = "75845239598-5193irc2lijcb7tbvhca8cqsaa0m1mde.apps.googleuserc
 const SHEET_ID = "1jG8XNPbuRtuC140rMaRo0NUvIXLDSEtS6Qi0rQGXFIg";
 const SCOPE = "https://www.googleapis.com/auth/spreadsheets";
 const BASE = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`;
-const TARGETS = { calories: 2800, protein: 180, carbs: 340, fat: 80, fiber: 30 };
+const TARGETS = { calories: 2200, protein: 180, carbs: 190, fat: 80, fiber: 30 };
 const BATCH_EXPIRY_DAYS = 30;
 
 const ACCENT = "#c8f135";
@@ -158,6 +158,9 @@ export default function NutritionTracker() {
   const [cartExtra, setCartExtra] = useState("");
   const [cartSaving, setCartSaving] = useState(false);
   const [cartErr, setCartErr] = useState("");
+  const [createTab, setCreateTab] = useState("create");
+  const [restockQty, setRestockQty] = useState({});
+  const [restockingId, setRestockingId] = useState(null);
 
   const [input, setInput] = useState("");
   const [parsing, setParsing] = useState(false);
@@ -430,6 +433,19 @@ export default function NutritionTracker() {
       setCartErr(e.message);
     }
     setCartSaving(false);
+  };
+
+  const restock = async (m) => {
+    if (!token) return;
+    const n = parseInt(restockQty[m.id] ?? m.total);
+    if (!n || n < 1) return;
+    setRestockingId(m.id);
+    try {
+      await sheetsUpdate(token, "Meals!D" + m._row + ":F" + m._row, [[today, n, 0]]);
+      await loadAll(token);
+      setRestockQty({ ...restockQty, [m.id]: undefined });
+    } catch (e) { setMErr("Restock failed: " + e.message); }
+    setRestockingId(null);
   };
 
   const logWeight = async () => {
@@ -711,12 +727,66 @@ export default function NutritionTracker() {
 
             {logMode === "prep" && prepScreen === "create" && (
               <div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                  <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase" }}>New prepped meal</div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase" }}>Meal library</div>
                   <button onClick={() => { setPrepScreen("library"); setMParsed(null); setMErr(""); }}
-                    style={{ background: "transparent", border: "none", color: MUTED2, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                    style={{ background: "transparent", border: "none", color: MUTED2, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Done</button>
                 </div>
 
+                <div style={{ display: "flex", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: 3, marginBottom: 16 }}>
+                  {[{ id: "create", label: "Create new" }, { id: "restock", label: "Restock (" + mealsRestockable.length + ")" }].map(t => (
+                    <button key={t.id} onClick={() => { setCreateTab(t.id); setMErr(""); }} style={{
+                      flex: 1, padding: "8px 0", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit",
+                      background: createTab === t.id ? ACCENT : "transparent",
+                      color: createTab === t.id ? "#000" : MUTED2, fontSize: 12, fontWeight: 700
+                    }}>{t.label}</button>
+                  ))}
+                </div>
+
+                {createTab === "restock" && (
+                  <div>
+                    {mealsRestockable.length === 0 ? (
+                      <div style={{ textAlign: "center", color: MUTED, fontSize: 13, padding: "30px 16px", border: `1px dashed ${BORDER}`, borderRadius: 12, lineHeight: 1.7 }}>
+                        Nothing to restock.<br />Used-up and expired batches show here.
+                      </div>
+                    ) : mealsRestockable.map(m => {
+                      const gone = (parseInt(m.total) || 0) - (parseInt(m.used) || 0) <= 0;
+                      const val = restockQty[m.id] ?? m.total;
+                      return (
+                        <div key={m.id} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "12px 13px", marginBottom: 8 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: TEXT, marginBottom: 4 }}>{m.name}</div>
+                          <div style={{ fontSize: 11, fontFamily: "monospace", color: MUTED2, display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
+                            <span style={{ color: ACCENT }}>{m.calories} kcal</span>
+                            <span style={{ color: "#4ade80" }}>P {m.protein}</span>
+                            <span style={{ color: "#60a5fa" }}>C {m.carbs}</span>
+                            <span style={{ color: "#fb923c" }}>F {m.fat}</span>
+                          </div>
+                          <div style={{ fontSize: 10, color: MUTED, marginBottom: 10 }}>
+                            {gone ? "used up" : "expired"} · made {normalizeDate(m.created)}
+                          </div>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <input type="number" min="1" step="1" value={val}
+                              onChange={e => setRestockQty({ ...restockQty, [m.id]: e.target.value })}
+                              style={{ ...inputStyle, width: 74, flex: "none", fontFamily: "monospace", padding: "9px 11px" }} />
+                            <span style={{ fontSize: 11, color: MUTED2 }}>portions</span>
+                            <button onClick={() => restock(m)} disabled={restockingId === m.id} style={{
+                              marginLeft: "auto", padding: "9px 16px", borderRadius: 8, border: "none", fontFamily: "inherit",
+                              background: restockingId === m.id ? CARD2 : ACCENT,
+                              color: restockingId === m.id ? MUTED : "#000",
+                              fontSize: 12, fontWeight: 700, cursor: restockingId === m.id ? "not-allowed" : "pointer"
+                            }}>{restockingId === m.id ? "..." : "Restock"}</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {mErr && (
+                      <div style={{ background: "#ef444410", border: "1px solid #ef444440", borderRadius: 10, padding: "12px 14px", marginTop: 12, fontSize: 12, color: "#ef4444" }}>{mErr}</div>
+                    )}
+                  </div>
+                )}
+
+                {createTab === "create" && (
+                <div>
                 <div style={{ marginBottom: 12 }}>
                   <label style={labelStyle}>Name</label>
                   <input value={mName} onChange={e => setMName(e.target.value)}
@@ -798,6 +868,8 @@ export default function NutritionTracker() {
                       fontWeight: 800, fontSize: 13, cursor: mSaving ? "not-allowed" : "pointer", fontFamily: "inherit"
                     }}>{mSaving ? "Saving..." : "✓ Save to library"}</button>
                   </div>
+                )}
+                </div>
                 )}
               </div>
             )}
@@ -1151,9 +1223,9 @@ export default function NutritionTracker() {
               <div style={{ fontSize: 9, color: MUTED, letterSpacing: 2, textTransform: "uppercase", marginBottom: 14 }}>Your Daily Targets</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {[
-                  { label: "Calories", val: "2,800", unit: "kcal", c: ACCENT },
+                  { label: "Calories", val: "2,200", unit: "kcal", c: ACCENT },
                   { label: "Protein", val: "180", unit: "g", c: "#4ade80" },
-                  { label: "Carbs", val: "340", unit: "g", c: "#60a5fa" },
+                  { label: "Carbs", val: "190", unit: "g", c: "#60a5fa" },
                   { label: "Fat", val: "80", unit: "g", c: "#fb923c" },
                   { label: "Fiber", val: "30", unit: "g", c: "#c084fc" },
                   { label: "TDEE", val: "3,300", unit: "kcal", c: MUTED2 },

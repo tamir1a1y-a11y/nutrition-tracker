@@ -22,7 +22,7 @@ export default async function handler(req, res) {
 CLIENT PROFILE
 - Male, 30, 187cm, starting weight 110kg, estimated 28% body fat
 - Goal: body recomposition, target ~14% body fat (~92kg)
-- Estimated TDEE 3,300 kcal; prescribed intake ${targets.calories} kcal (moderate deficit)
+- Estimated TDEE 3,300 kcal; prescribed intake ${targets.calories} kcal (aggressive deficit, deliberate)
 - Macro targets: ${targets.protein}g protein, ${targets.carbs}g carbs, ${targets.fat}g fat, ${targets.fiber}g fiber
 - Training: 3 strength sessions/week, adding swimming. Office job, ~10k steps/day.
 - Tracks by weight where possible, estimates otherwise. No restrictions or allergies.
